@@ -4,12 +4,15 @@ Organizador de fotos por reconocimiento facial con Python
 **Dependencias:**
 
 ```
-pip install face_recognition pillow numpy opencv-python dlib-binary
+pip install deepface tf-keras opencv-python pillow
 ```
 
 ## Ajustes que puedes hacer:
-- `best_distance = 0.6` (Baja este valor si es muy estricto a 0.4 - 0.5), sube si es muy permisivo (0.7 - 0.8).
-- Rutas: Modifica las tres rutas al final del script según tu estructura
+- `threshold = 0.6` (Baja este valor si es muy estricto a 0.4 - 0.5), sube si es muy permisivo (0.7 - 0.8).
+- Cambiar el modelo: se ocupa el modelo `VGG-Face` que es el más preciso, pero puedes optar por estas otras opciones:
+- `Facenet` - Más rápido
+- `OpenFace` - Balance entre velocidad y precisión
+- `DeepFace` - Modelo original
 
 
 ## Cómo funcionan los videos
