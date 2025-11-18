@@ -31,6 +31,19 @@ class FacialImageClassifier:
     def log(self, message):
         if self.log_callback:
             self.log_callback(message)
+    
+    def is_safe_path(self, path):
+        """Verifica si una ruta es segura para DeepFace (sin caracteres especiales)"""
+        # Caracteres problemáticos para DeepFace
+        problematic_chars = ['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü', 'Á', 'É', 'Í', 'Ó', 'Ú', 'Ñ', 'Ü']
+        
+        for char in problematic_chars:
+            if char in path:
+                return False
+        
+        # Verificar si hay espacios en la ruta (también puede causar problemas)
+        # Esto es más permisivo ya que algunos sistemas los manejan bien
+        return True
 
     def load_known_faces(self):
         """Carga rostros conocidos desde la carpeta de referencia o destino"""
@@ -57,10 +70,25 @@ class FacialImageClassifier:
                 if image_count >= self.max_reference_images:
                     break
                 
+                # Ignorar archivos ocultos de sistema (macOS, Windows)
+                if image_name.startswith('.') or image_name.startswith('._'):
+                    continue
+                
+                # Ignorar archivos Thumbs.db de Windows
+                if image_name.lower() in ['thumbs.db', 'desktop.ini']:
+                    continue
+                
                 if not any(image_name.lower().endswith(fmt) for fmt in self.image_formats):
                     continue
                 
                 image_path = os.path.join(person_dir, image_name)
+                
+                # Verificar si la ruta tiene caracteres problemáticos
+                if not self.is_safe_path(image_path):
+                    self.log(f"    ⚠️  Ruta con caracteres especiales (se omitirá): {image_name}")
+                    self.log(f"        Sugerencia: Renombra la carpeta sin espacios/acentos")
+                    continue
+                
                 try:
                     # Verificar que hay un rostro en la imagen
                     faces = DeepFace.extract_faces(
@@ -75,7 +103,7 @@ class FacialImageClassifier:
                     else:
                         self.log(f"    ⚠️  No se detectó rostro en: {image_name}")
                 except Exception as e:
-                    self.log(f"    ❌ Error al procesar {image_name}: {e}")
+                    self.log(f"    ❌ Error al procesar {image_name}: {str(e)[:80]}")
             
             if face_images:
                 self.known_faces_data[person_name] = face_images
