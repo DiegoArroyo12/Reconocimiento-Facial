@@ -1,0 +1,638 @@
+import os
+import shutil
+import platform
+import uuid
+from tkinter import Tk, Label, Button, filedialog, messagebox, Frame, Entry, LabelFrame, Canvas, Toplevel, Scrollbar, StringVar, Listbox, END, ttk, LEFT, RIGHT
+from PIL import Image, ImageTk
+import cv2
+import threading
+import pygame
+from moviepy import VideoFileClip
+from LogicaRenombramiento import RenamerTool
+from LogicaFacial import FaceBrain
+
+# Paleta de Colores y Estilos
+COLOR_BG = "#202124"
+COLOR_SIDEBAR = "#2f3136"
+COLOR_ACCENT = "#5865F2"
+COLOR_SUCCESS = "#3ba55c"
+COLOR_WARNING = "#faa61a"
+COLOR_TEXT = "#ffffff"
+COLOR_TEXT_SEC = "#b9bbbe"
+FONT_MAIN = ("Segoe UI", 10)
+FONT_BOLD = ("Segoe UI", 11, "bold")
+
+class Clasificador:
+    def __init__(self):
+        self.ventana = Tk()
+        self.ventana.update_idletasks()
+        
+        ancho = self.ventana.winfo_screenwidth()
+        alto = self.ventana.winfo_screenheight()
+        self.cursor = 'hand2' if platform.system() != 'Darwin' else 'pointinghand'
+        
+        self.renamer = RenamerTool(log_callback=print)
+        self.ia = None
+        self.sugerenciaIA = StringVar(value="IA Inactiva")
+        self.estado_carga_texto = StringVar(value="Esperando configuración...")
+        
+        # Control de Hilos
+        self.current_job_id = 0
+        
+        self.ventana.geometry(f'{ancho}x{alto}+{ancho // 2 - ancho // 2}+{alto // 2 - alto // 2}')
+        self.ventana.resizable(True, True)
+        self.ventana.configure(bg=COLOR_BG)
+        self.ventana.title("Clasificador de Imágenes")
+        
+        self.lista = []
+        self.indiceActual = 0
+        self.etiquetaElemento = None
+        self.carpetaOrigen = ""
+        self.carpetaDestino = ''
+        self.carpetasDestino = {}
+        self.imagenValida = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
+        self.videoValido = ('.mp4', '.avi', '.mov', '.mkv')
+        
+        self.setup_ui()
+        self.ventana.mainloop()
+
+    def setup_ui(self):
+        # Barra Izquierda
+        self.panel_izquierdo = Frame(self.ventana, bg=COLOR_SIDEBAR, width=250)
+        self.panel_izquierdo.pack(side='left', fill='y')
+        self.panel_izquierdo.pack_propagate(False)
+
+        Label(self.panel_izquierdo, text="CONFIGURACIÓN", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(20, 5), anchor="w", padx=15)
+        
+        self.btn_crear_moderno(self.panel_izquierdo, "📂 1. Origen", self.seleccionarCarpeta, COLOR_ACCENT)
+        self.btn_crear_moderno(self.panel_izquierdo, "📁 2. Destino (IA)", self.carpetaPrincipalDestino, COLOR_ACCENT)
+        
+        Frame(self.panel_izquierdo, bg="#40444b", height=1).pack(fill='x', padx=15, pady=15)
+        
+        Label(self.panel_izquierdo, text="ACCIONES", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(5, 5), anchor="w", padx=15)
+        self.btn_crear_moderno(self.panel_izquierdo, "➕ Nueva Carpeta", self.nuevaCarpetaPopup, "#4f545c")
+        self.btn_crear_moderno(self.panel_izquierdo, "🛠 Herramientas", self.abrir_menu_herramientas, COLOR_WARNING)
+
+        # Panel Derecho
+        self.panel_derecho = Frame(self.ventana, bg=COLOR_SIDEBAR, width=280)
+        self.panel_derecho.pack(side='right', fill='y')
+        self.panel_derecho.pack_propagate(False)
+
+        # Tarjeta IA
+        self.card_ia = Frame(self.panel_derecho, bg="#202225", padx=10, pady=10)
+        self.card_ia.pack(fill='x', padx=10, pady=20)
+        
+        Label(self.card_ia, text="🤖 MOTOR DE IA", bg="#202225", fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(anchor="w")
+        
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure("green.Horizontal.TProgressbar", background=COLOR_SUCCESS, troughcolor="#40444b", borderwidth=0)
+        
+        self.barra_carga = ttk.Progressbar(self.card_ia, orient="horizontal", mode="determinate", style="green.Horizontal.TProgressbar")
+        self.barra_carga.pack(fill='x', pady=5)
+        Label(self.card_ia, textvariable=self.estado_carga_texto, bg="#202225", fg="#dcddde", font=("Arial", 8)).pack(anchor="w")
+
+        Frame(self.card_ia, bg="#40444b", height=1).pack(fill='x', pady=10)
+
+        Label(self.card_ia, text="SUGERENCIA:", bg="#202225", fg=COLOR_TEXT_SEC, font=("Arial", 8)).pack(anchor="w")
+        Label(self.card_ia, textvariable=self.sugerenciaIA, bg="#202225", fg=COLOR_SUCCESS, font=("Segoe UI", 16, "bold"), wraplength=240, justify="left").pack(anchor="w", pady=2)
+
+        # Botón Acción IA
+        self.btn_accion_ia = Button(self.card_ia, text="Mover Aquí", bg=COLOR_ACCENT, fg="white", 
+                                    font=("Segoe UI", 9, "bold"), bd=0, padx=10, pady=5, cursor=self.cursor)
+
+        # Lista de Carpetas
+        Label(self.panel_derecho, text="CLASIFICAR EN:", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(10, 5), anchor="w", padx=15)
+        
+        self.frame_lista = Frame(self.panel_derecho, bg=COLOR_SIDEBAR)
+        self.frame_lista.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.canvas = Canvas(self.frame_lista, bg=COLOR_SIDEBAR, highlightthickness=0)
+        self.scrollbar = Scrollbar(self.frame_lista, orient="vertical", command=self.canvas.yview)
+        self.scrollFrame = Frame(self.canvas, bg=COLOR_SIDEBAR)
+        
+        self.scrollFrame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.scrollFrame, anchor="nw", width=250)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        self._bind_mouse_scroll(self.canvas)
+
+        # Panel Central (Imagenes y Videos)
+        self.panel_central = Frame(self.ventana, bg=COLOR_BG)
+        self.panel_central.pack(side='left', fill='both', expand=True)
+        
+        self.frame_imagen = Frame(self.panel_central, bg=COLOR_BG)
+        self.frame_imagen.pack(fill='both', expand=True, padx=20, pady=20)
+        self.frame_imagen.pack_propagate(False)
+        
+        self.etiquetaElemento = Label(self.frame_imagen, bg="#000000", text="Sin imagen cargada", fg="#555")
+        self.etiquetaElemento.pack(fill='both', expand=True)
+
+        self.frame_nav = Frame(self.panel_central, bg=COLOR_BG, pady=20, height=80)
+        self.frame_nav.pack(side='bottom', fill='x')
+        self.frame_nav.pack_propagate(False)
+        
+        self.btn_crear_nav(self.frame_nav, "◀ Anterior", self.anteriorElemento, side=LEFT)
+        self.btn_crear_nav(self.frame_nav, "Siguiente ▶", self.siguienteElemento, side=RIGHT)
+
+        self.frame_info_centro = Frame(self.frame_nav, bg=COLOR_BG)
+        self.frame_info_centro.pack(side=LEFT, fill='both', expand=True)
+        
+        self.lbl_contador = Label(self.frame_info_centro, text="0 / 0", 
+                                  bg=COLOR_BG, fg="white", font=("Segoe UI", 18, "bold"))
+        self.lbl_contador.pack(side='top', pady=(5, 0))
+        
+        self.lbl_nombre_archivo = Label(self.frame_info_centro, text="...", 
+                                        bg=COLOR_BG, fg=COLOR_TEXT_SEC, font=("Segoe UI", 9))
+        self.lbl_nombre_archivo.pack(side='top')
+
+
+    # Funciones de Estilo UI
+    def btn_crear_moderno(self, parent, text, command, bg_color):
+        btn = Button(parent, text=text, command=command, 
+                     bg=bg_color, fg="white", 
+                     font=FONT_BOLD, bd=0, padx=20, pady=12, 
+                     cursor=self.cursor, activebackground=bg_color, activeforeground="white")
+        btn.pack(fill='x', padx=15, pady=5)
+        
+        def on_enter(e): btn['bg'] = self.adjust_color_lightness(bg_color, 1.2)
+        def on_leave(e): btn['bg'] = bg_color
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
+        return btn
+
+    def btn_crear_nav(self, parent, text, command, side):
+        btn = Button(parent, text=text, command=command,
+                     bg="#40444b", fg="white",
+                     font=("Segoe UI", 12), bd=0, padx=30, pady=10,
+                     cursor=self.cursor)
+        btn.pack(side=side, padx=20)
+        
+        def on_enter(e): btn['bg'] = "#585d66"
+        def on_leave(e): btn['bg'] = "#40444b"
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
+
+    def btn_crear_categoria(self, parent, text, command):
+        btn = Button(parent, text=f"📁 {text}", command=command,
+                     bg="#36393f", fg="#dcddde",
+                     font=("Segoe UI", 9), bd=0, anchor="w", padx=10, pady=8,
+                     cursor=self.cursor)
+        btn.pack(fill='x', padx=2, pady=1)
+        
+        self._bind_mouse_scroll(btn) 
+        
+        def on_enter(e): 
+            btn['bg'] = COLOR_ACCENT
+            btn['fg'] = "white"
+        def on_leave(e): 
+            btn['bg'] = "#36393f"
+            btn['fg'] = "#dcddde"
+        btn.bind("<Enter>", on_enter, add='+')
+        btn.bind("<Leave>", on_leave, add='+')
+
+    def adjust_color_lightness(self, color_hex, factor):
+        try:
+            r, g, b = int(color_hex[1:3], 16), int(color_hex[3:5], 16), int(color_hex[5:7], 16)
+            r = min(255, int(r * factor))
+            g = min(255, int(g * factor))
+            b = min(255, int(b * factor))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except: return color_hex
+
+    # Interfaz y Scroll
+    def _bind_mouse_scroll(self, widget):
+        widget.bind("<MouseWheel>", self.scroll_with_mouse)
+        widget.bind("<Button-4>", self.scroll_with_mouse)
+        widget.bind("<Button-5>", self.scroll_with_mouse)
+
+    def ajustar_scrollFrame(self, event=None):
+        self.canvas.itemconfig(self.canvas.create_window((0, 0), window=self.scrollFrame, anchor='nw', width=self.canvas.winfo_width()))
+    
+    def scroll_with_mouse(self, event):
+        if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+
+    def actualizarBotones(self):
+        for widget in self.scrollFrame.winfo_children(): widget.destroy()
+        if not self.carpetasDestino:
+            Label(self.scrollFrame, text="No hay subcarpetas", bg=COLOR_SIDEBAR, fg="gray").pack(pady=10)
+            return
+        
+        self._bind_mouse_scroll(self.scrollFrame)
+        
+        for carpeta in sorted(self.carpetasDestino.keys()):
+            self.btn_crear_categoria(self.scrollFrame, carpeta, lambda c=carpeta: self.clasificar(c))
+        self.canvas.config(scrollregion=self.canvas.bbox('all'))
+
+    def actualizar_barra_ia(self, actual, total, texto=""):
+        if actual == -1:
+            self.barra_carga.config(mode='indeterminate')
+            self.barra_carga.start(10)
+            self.estado_carga_texto.set("Cargando Motor RetinaFace (Espere)...")
+        else:
+            self.barra_carga.stop()
+            self.barra_carga.config(mode='determinate')
+            
+            if total > 0:
+                porcentaje = (actual / total) * 100
+                self.barra_carga['value'] = porcentaje
+                self.estado_carga_texto.set(f"{texto} ({actual}/{total})")
+            
+            if actual >= total:
+                self.barra_carga['value'] = 100
+                self.estado_carga_texto.set("IA Activa y Lista")
+                if self.lista:
+                    # Iniciar predicción en hilo nuevo con ID de trabajo
+                    self.sugerenciaIA.set("Re-Analizando...")
+                    self.current_job_id += 1
+                    threading.Thread(target=self._predecir_actual, args=(self.lista[self.indiceActual], self.current_job_id), daemon=True).start()
+        
+        self.ventana.update_idletasks()
+        
+    def seleccionarCarpeta(self):
+        self.carpetaOrigen = filedialog.askdirectory(title='Seleccione Carpeta Origen')
+        self.cargarElementos()
+        
+    def carpetaPrincipalDestino(self):
+        self.carpetaDestino = filedialog.askdirectory(title='Seleccione Carpeta Destino')
+        if not self.carpetaDestino: return
+        
+        self.barra_carga['value'] = 0
+        self.estado_carga_texto.set("Iniciando Motor IA...")
+        
+        self.ia = FaceBrain(self.carpetaDestino, log_callback=print, progress_callback=self.actualizar_barra_ia)
+        self.ia.cargar_referencias_async()
+        
+        self.carpetasDestino = {
+            f: os.path.join(self.carpetaDestino, f) for f in os.listdir(self.carpetaDestino)
+            if os.path.isdir(os.path.join(self.carpetaDestino, f))
+        }
+        self.actualizarBotones()
+        
+    def cargarElementos(self):
+        if not self.carpetaOrigen: return
+        try:
+            self.lista = [os.path.join(self.carpetaOrigen, f) for f in os.listdir(self.carpetaOrigen) 
+                          if f.lower().endswith(self.imagenValida + self.videoValido)]
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo leer la carpeta: {e}")
+            return
+
+        if not self.lista: messagebox.showerror('Info', 'Carpeta vacía de multimedia.')
+        else:
+            self.indiceActual = 0
+            self.mostrarContenido()
+
+    def mostrarContenido(self):
+        if not self.lista: return
+        
+        self.current_job_id += 1
+        job_id = self.current_job_id
+        
+        contenido = self.lista[self.indiceActual]
+        ext = os.path.splitext(contenido)[1].lower()
+        nombre_archivo = os.path.basename(contenido)
+        
+        self.lbl_contador.config(text=f"{self.indiceActual + 1} / {len(self.lista)}")
+        self.lbl_nombre_archivo.config(text=nombre_archivo)
+        
+        self.ventana.update_idletasks()
+        
+        w_frame = self.frame_imagen.winfo_width()
+        h_frame = self.frame_imagen.winfo_height()
+        
+        if w_frame < 50: w_frame = 800
+        if h_frame < 50: h_frame = 600
+
+        for widget in self.frame_imagen.winfo_children():
+            if isinstance(widget, Button): widget.destroy()
+
+        if ext in self.imagenValida:
+            try:
+                img = Image.open(contenido)
+                img.thumbnail((w_frame, h_frame), Image.Resampling.LANCZOS)
+                foto = ImageTk.PhotoImage(img)
+                self.etiquetaElemento.config(image=foto, text="")
+                self.etiquetaElemento.image = foto
+            except:
+                self.etiquetaElemento.config(image="", text="Error al cargar imagen")
+                
+        elif ext in self.videoValido:
+            cap = cv2.VideoCapture(contenido)
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(frame)
+                img_pil.thumbnail((w_frame, h_frame))
+                foto = ImageTk.PhotoImage(img_pil)
+                self.etiquetaElemento.config(image=foto, text="")
+                self.etiquetaElemento.image = foto
+                
+                btn_play = Button(self.frame_imagen, text="▶ REPRODUCIR", command=lambda: self.reproducirVideo(contenido),
+                                  bg=COLOR_ACCENT, fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
+                btn_play.place(relx=0.5, rely=0.9, anchor="center")
+            else:
+                self.etiquetaElemento.config(text="Video sin vista previa", image="")
+        
+        # Resetear UI antes de iniciar hilo
+        self.btn_accion_ia.pack_forget()
+        self.card_ia.config(bg="#202225")
+        
+        if self.ia:
+            self.sugerenciaIA.set("Analizando...")
+            # Pasamos el job_id al hilo
+            threading.Thread(target=self._predecir_actual, args=(contenido, job_id), daemon=True).start()
+        else:
+            self.sugerenciaIA.set("IA Inactiva")
+
+    def _predecir_actual(self, image_path, job_id):
+        if job_id != self.current_job_id: return
+
+        if not self.ia: return
+        
+        img_para_analisis = image_path
+        es_video = False
+        
+        if image_path.lower().endswith(self.videoValido):
+            try:
+                cap = cv2.VideoCapture(image_path)
+                length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if length > 10:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(length * 0.15))
+                
+                ret, frame = cap.read()
+                cap.release()
+                
+                if ret:
+                    temp_frame_path = f"temp_frame_{uuid.uuid4().hex}.jpg"
+                    cv2.imwrite(temp_frame_path, frame)
+                    img_para_analisis = temp_frame_path
+                    es_video = True
+                else:
+                    self.ventana.after(0, lambda: self.sugerenciaIA.set("Video ilegible"))
+                    return
+            except:
+                self.ventana.after(0, lambda: self.sugerenciaIA.set("Error Video"))
+                return
+
+        if job_id != self.current_job_id: 
+            if es_video and os.path.exists(img_para_analisis):
+                try: os.remove(img_para_analisis)
+                except: pass
+            return
+
+        res = self.ia.sugerir_persona(img_para_analisis)
+        
+        if es_video and os.path.exists(img_para_analisis):
+            try: os.remove(img_para_analisis)
+            except: pass
+
+        # Control de Hilos (id)
+        if job_id != self.current_job_id: return
+
+        # Seguridad de Hilos
+        def update_ui_ia():
+            if "Desconocido" in res or "No detecto" in res:
+                self.card_ia.config(bg="#202225")
+                self.btn_accion_ia.pack_forget()
+            else:
+                nombre_carpeta = res.split(" (")[0]
+                if nombre_carpeta in self.carpetasDestino:
+                    self.btn_accion_ia.config(text=f"Mover a: {nombre_carpeta}", 
+                                            command=lambda: self.clasificar(nombre_carpeta))
+                    self.btn_accion_ia.pack(fill='x', pady=5)
+            self.sugerenciaIA.set(res)
+
+        self.ventana.after(0, update_ui_ia)
+
+    def siguienteElemento(self):
+        if self.lista:
+            self.indiceActual = (self.indiceActual + 1) % len(self.lista)
+            self.mostrarContenido()
+
+    def anteriorElemento(self):
+        if self.lista:
+            self.indiceActual = (self.indiceActual - 1) % len(self.lista)
+            self.mostrarContenido()
+
+    def clasificar(self, carpeta):
+        if not self.lista: return
+        contenido = self.lista[self.indiceActual]
+        destino = os.path.join(self.carpetasDestino[carpeta], os.path.basename(contenido))
+        
+        try:
+            shutil.move(contenido, destino)
+            self.lista.pop(self.indiceActual)
+            if self.lista:
+                self.indiceActual %= len(self.lista)
+                self.mostrarContenido()
+            else:
+                self.etiquetaElemento.config(image="", text="¡Carpeta terminada! 🎉")
+                self.lbl_contador.config(text="0 / 0")
+                self.lbl_nombre_archivo.config(text="...")
+                self.sugerenciaIA.set("-")
+                self.btn_accion_ia.pack_forget()
+        except Exception as e:
+            messagebox.showerror('Error', f'Error al mover: {e}')
+
+    def nuevaCarpetaPopup(self):
+        if not self.carpetaDestino:
+            messagebox.showwarning("Atención", "Selecciona primero la carpeta de destino.")
+            return
+            
+        top = Toplevel(self.ventana)
+        top.title("Nueva Carpeta")
+        w_pop, h_pop = 300, 150
+        x = self.ventana.winfo_screenwidth() // 2 - w_pop // 2
+        y = self.ventana.winfo_screenheight() // 2 - h_pop // 2
+        top.geometry(f"{w_pop}x{h_pop}+{x}+{y}")
+        top.configure(bg=COLOR_BG)
+        
+        Label(top, text="Nombre de la carpeta:", bg=COLOR_BG, fg="white").pack(pady=10)
+        entry = Entry(top)
+        entry.pack(pady=5)
+        entry.focus()
+        
+        def confirmar():
+            nombre = entry.get()
+            if nombre:
+                path = os.path.join(self.carpetaDestino, nombre)
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    self.carpetasDestino[nombre] = path
+                    self.actualizarBotones()
+                    top.destroy()
+                except Exception as e:
+                    messagebox.showerror("Error", str(e))
+        
+        Button(top, text="Crear", command=confirmar, bg=COLOR_SUCCESS, fg="white", bd=0, padx=10, pady=5).pack(pady=10)
+
+    # Herramientas
+    def abrir_menu_herramientas(self):
+        top = Toplevel(self.ventana)
+        top.title("Herramientas Avanzadas")
+        
+        w_pop, h_pop = 450, 500
+        x = self.ventana.winfo_screenwidth() // 2 - w_pop // 2
+        y = self.ventana.winfo_screenheight() // 2 - h_pop // 2
+        top.geometry(f"{w_pop}x{h_pop}+{x}+{y}")
+        top.configure(bg=COLOR_BG)
+        
+        # UI Barra
+        lbl_status = Label(top, text="Esperando...", bg=COLOR_BG, fg="gray")
+        lbl_status.pack(side="bottom", pady=5)
+        pb_renombrar = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=400)
+        pb_renombrar.pack(side="bottom", pady=5, padx=20)
+        
+        # Actualizar UI desde el Hilo
+        def update_ui_safe(current, total, msg):
+            pb_renombrar["maximum"] = total
+            pb_renombrar["value"] = current
+            lbl_status.config(text=f"{msg} ({int(current/total*100)}%)" if total > 0 else msg)
+        
+        # El callback que llama el hilo
+        def progress_adapter(current, total, msg=""):
+            # Programamos la actualización en el hilo principal
+            top.after(0, lambda: update_ui_safe(current, total, msg))
+
+        # Asignar callback
+        self.renamer.progress_callback = progress_adapter
+        
+        # Lógica de Hilos
+        def run_threaded(rutas):
+            if not isinstance(rutas, list): rutas = [rutas] # Asegurar que sea lista
+            
+            if messagebox.askyesno("Confirmar", "El proceso iniciará ahora.\nLa pantalla no se congelará."):
+                pb_renombrar["value"] = 0
+                
+                def worker():
+                    for path in rutas:
+                        self.renamer.procesar_carpeta(path)
+                    
+                    # Finalizar
+                    top.after(0, lambda: messagebox.showinfo("Listo", "Proceso finalizado"))
+                    top.after(0, lambda: [self.cargarElementos(), self.actualizarBotones(), top.destroy()])
+                
+                threading.Thread(target=worker, daemon=True).start()
+
+        Label(top, text="Limpieza y Renombrado", bg=COLOR_BG, fg="white", font=FONT_BOLD).pack(pady=10)
+        
+        if self.carpetaOrigen:
+            Button(top, text="Limpiar Carpeta Origen (Actual)", command=lambda: run_threaded(self.carpetaOrigen), 
+                   bg=COLOR_SIDEBAR, fg="white", bd=0, pady=8, width=40).pack(pady=5)
+        
+        if self.carpetaDestino:
+            rutas_destino = [os.path.join(self.carpetaDestino, d) for d in os.listdir(self.carpetaDestino) if os.path.isdir(os.path.join(self.carpetaDestino, d))]
+            Button(top, text="Limpiar TODAS las Subcarpetas Destino", 
+                   command=lambda: run_threaded(rutas_destino),
+                   bg=COLOR_WARNING, fg="white", bd=0, pady=8, width=40).pack(pady=5)
+            
+            Label(top, text="--- O selecciona una específica ---", bg=COLOR_BG, fg=COLOR_TEXT_SEC).pack(pady=(15, 5))
+            
+            frame_list = Frame(top, bg=COLOR_BG)
+            frame_list.pack(fill='both', expand=True, padx=20, pady=5)
+            
+            scrollbar = Scrollbar(frame_list, orient="vertical")
+            listbox = Listbox(frame_list, yscrollcommand=scrollbar.set, bg=COLOR_SIDEBAR, fg="white", selectbackground=COLOR_ACCENT, bd=0, highlightthickness=0)
+            scrollbar.config(command=listbox.yview)
+            
+            listbox.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            
+            carpetas_ordenadas = sorted(self.carpetasDestino.keys())
+            for carpeta in carpetas_ordenadas:
+                listbox.insert(END, carpeta)
+                
+            def procesar_seleccion():
+                sel = listbox.curselection()
+                if sel:
+                    nombre = listbox.get(sel[0])
+                    run_threaded(self.carpetasDestino[nombre])
+                else:
+                    messagebox.showwarning("Atención", "Selecciona una carpeta de la lista")
+
+            Button(top, text="Procesar Selección", command=procesar_seleccion,
+                   bg=COLOR_ACCENT, fg="white", bd=0, pady=8, width=40).pack(pady=10)
+
+    # Reproductor de Video
+    def reproducirVideo(self, rutaVideo):
+        popupVideo = Toplevel(self.ventana)
+        popupVideo.title('Reproductor')
+        popupVideo.configure(bg="black")
+        
+        w_pop, h_pop = 800, 1000
+        x = self.ventana.winfo_screenwidth() // 2 - w_pop // 2
+        y = self.ventana.winfo_screenheight() // 2 - h_pop // 2
+        popupVideo.geometry(f'{w_pop}x{h_pop}+{x}+{y}')
+        
+        etiquetaVideo = Label(popupVideo, bg="black")
+        etiquetaVideo.pack(fill='both', expand=True)
+        
+        self.detenerAudio = threading.Event()
+        
+        audio_filename = f"temp_audio_{uuid.uuid4().hex}.mp3"
+
+        def reproducirAudio():
+            try:
+                clip = VideoFileClip(rutaVideo)
+                clip.audio.write_audiofile(audio_filename, logger=None)
+                pygame.mixer.init()
+                pygame.mixer.music.load(audio_filename)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    if self.detenerAudio.is_set():
+                        pygame.mixer.music.stop()
+                        break
+            except Exception as e:
+                print(f"Error Audio: {e}")
+            finally:
+                try: pygame.mixer.quit()
+                except: pass
+                if os.path.exists(audio_filename):
+                    try: os.remove(audio_filename)
+                    except: pass
+
+        cap = cv2.VideoCapture(rutaVideo)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        speed = 0.9 
+        if fps == 0: fps = 30
+        elif fps > 50: speed = 0.5
+
+        def reproducir():
+            ret, frame = cap.read()
+            if not ret or self.detenerAudio.is_set():
+                cap.release()
+                return
+            
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, (w_pop, h_pop)) 
+            imagen = Image.fromarray(frame)
+            foto = ImageTk.PhotoImage(imagen)
+            etiquetaVideo.config(image=foto)
+            etiquetaVideo.image = foto
+
+            delay = int(1000/fps * speed)
+            if delay < 1: delay = 1
+            
+            popupVideo.after(delay, reproducir)
+            
+        reproducir()
+        threading.Thread(target=reproducirAudio, daemon=True).start()
+            
+        def cerrarPopup():
+            self.detenerAudio.set()
+            popupVideo.destroy()
+            if os.path.exists(audio_filename):
+                try: os.remove(audio_filename)
+                except: pass
+        
+        popupVideo.protocol("WM_DELETE_WINDOW", cerrarPopup)
+        popupVideo.after(int(1000/fps), lambda: None) 
+
+if __name__ == "__main__":
+    Clasificador()
