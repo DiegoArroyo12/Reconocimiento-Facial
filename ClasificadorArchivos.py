@@ -10,6 +10,7 @@ import pygame
 from moviepy import VideoFileClip
 from LogicaRenombramiento import RenamerTool
 from LogicaFacial import FaceBrain
+from EditorImagen import EditorImagen
 
 # Paleta de Colores y Estilos
 COLOR_BG = "#202124"
@@ -64,14 +65,14 @@ class Clasificador:
 
         Label(self.panel_izquierdo, text="CONFIGURACIÓN", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(20, 5), anchor="w", padx=15)
         
-        self.btn_crear_moderno(self.panel_izquierdo, "📂 1. Origen", self.seleccionarCarpeta, COLOR_ACCENT)
-        self.btn_crear_moderno(self.panel_izquierdo, "📁 2. Destino (IA)", self.carpetaPrincipalDestino, COLOR_ACCENT)
+        self.btn_crear_moderno(self.panel_izquierdo, "Origen", self.seleccionarCarpeta, COLOR_ACCENT, ruta_imagen="iconos/carpetaIcono.png")
+        self.btn_crear_moderno(self.panel_izquierdo, "Destino (IA)", self.carpetaPrincipalDestino, COLOR_ACCENT, ruta_imagen="iconos/carpetaIcono.png")
         
         Frame(self.panel_izquierdo, bg="#40444b", height=1).pack(fill='x', padx=15, pady=15)
         
         Label(self.panel_izquierdo, text="ACCIONES", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(5, 5), anchor="w", padx=15)
-        self.btn_crear_moderno(self.panel_izquierdo, "➕ Nueva Carpeta", self.nuevaCarpetaPopup, "#4f545c")
-        self.btn_crear_moderno(self.panel_izquierdo, "🛠 Herramientas", self.abrir_menu_herramientas, COLOR_WARNING)
+        self.btn_crear_moderno(self.panel_izquierdo, "Nueva Carpeta", self.nuevaCarpetaPopup, "#4f545c", ruta_imagen="iconos/agregarIcono.png")
+        self.btn_crear_moderno(self.panel_izquierdo, "Herramientas", self.abrir_menu_herramientas, COLOR_WARNING, ruta_imagen="iconos/herramientasIcono.png")
 
         # Panel Derecho
         self.panel_derecho = Frame(self.ventana, bg=COLOR_SIDEBAR, width=280)
@@ -150,17 +151,37 @@ class Clasificador:
 
 
     # Funciones de Estilo UI
-    def btn_crear_moderno(self, parent, text, command, bg_color):
+    def btn_crear_moderno(self, parent, text, command, bg_color, ruta_imagen=None):
+        """
+        Crea un botón moderno. 
+        Si se pasa 'ruta_imagen', carga el icono y lo pone a la izquierda.
+        """
         btn = Button(parent, text=text, command=command, 
                      bg=bg_color, fg="white", 
                      font=FONT_BOLD, bd=0, padx=20, pady=12, 
                      cursor=self.cursor, activebackground=bg_color, activeforeground="white")
+        
+        if ruta_imagen and os.path.exists(ruta_imagen):
+            try:
+                # 1. Cargar y redimensionar imagen (para que quepa en el botón)
+                img = Image.open(ruta_imagen)
+                img = img.resize((24, 24), Image.Resampling.LANCZOS) # Tamaño icono estándar
+                foto = ImageTk.PhotoImage(img)
+                
+                # 2. Configurar botón con imagen
+                btn.config(image=foto, compound="left", padx=15) # compound='left' pone el icono antes del texto
+                btn.image = foto 
+            except Exception as e:
+                print(f"No se pudo cargar icono {ruta_imagen}: {e}")
+
         btn.pack(fill='x', padx=15, pady=5)
         
+        # Efecto Hover
         def on_enter(e): btn['bg'] = self.adjust_color_lightness(bg_color, 1.2)
         def on_leave(e): btn['bg'] = bg_color
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
+        
         return btn
 
     def btn_crear_nav(self, parent, text, command, side):
@@ -348,6 +369,28 @@ class Clasificador:
             threading.Thread(target=self._predecir_actual, args=(contenido, job_id), daemon=True).start()
         else:
             self.sugerenciaIA.set("IA Inactiva")
+            
+        if ext in self.imagenValida:
+            try: 
+                img = Image.open(contenido)
+                img.thumbnail((w_frame, h_frame), Image.Resampling.LANCZOS)
+                foto = ImageTk.PhotoImage(img)
+                self.etiquetaElemento.config(image=foto, text="")
+                self.etiquetaElemento.image = foto
+
+                btn_edit = Button(self.frame_imagen, text="Recortar",
+                                  command=lambda: self.abrirEditor(contenido),
+                                  bg="#40444b", fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
+                btn_edit.place(relx=0.95, rely=0.05, anchor="ne")
+            except:
+                self.etiquetaElemento.config(image="", text="Error al cargar imagen")
+                
+    def abrirEditor(self, image_path):
+        def alTerminar():
+            self.mostrarContenido()
+            if self.ia: threading.Thread(target=self._predecir_actual, args=(image_path, self.current_job_id), daemon=True).start()
+            
+        EditorImagen(self.ventana, image_path, alTerminar)
 
     def _predecir_actual(self, image_path, job_id):
         if job_id != self.current_job_id: return
