@@ -2,7 +2,9 @@ import os
 import shutil
 import platform
 import uuid
-from tkinter import Tk, Label, Button, filedialog, messagebox, Frame, Entry, LabelFrame, Canvas, Toplevel, Scrollbar, StringVar, Listbox, END, ttk, LEFT, RIGHT
+import time
+import tempfile
+from tkinter import Tk, Label, Button, filedialog, messagebox, Frame, Entry, LabelFrame, Canvas, Toplevel, Scrollbar, StringVar, Listbox, END, ttk, LEFT, RIGHT, BooleanVar, Checkbutton
 from PIL import Image, ImageTk
 import cv2
 import threading
@@ -12,7 +14,6 @@ from LogicaRenombramiento import RenamerTool
 from LogicaFacial import FaceBrain
 from EditorImagen import EditorImagen
 
-# Paleta de Colores y Estilos
 COLOR_BG = "#202124"
 COLOR_SIDEBAR = "#2f3136"
 COLOR_ACCENT = "#5865F2"
@@ -32,18 +33,23 @@ class Clasificador:
         alto = self.ventana.winfo_screenheight()
         self.cursor = 'hand2' if platform.system() != 'Darwin' else 'pointinghand'
         
+        try: pygame.mixer.init()
+        except: print("No se pudo iniciar el audio")
+        
         self.renamer = RenamerTool(log_callback=print)
         self.ia = None
         self.sugerenciaIA = StringVar(value="IA Inactiva")
         self.estado_carga_texto = StringVar(value="Esperando configuración...")
         
-        # Control de Hilos
+        self.var_autoclose = BooleanVar(value=True)
         self.current_job_id = 0
+        
+        self.popup_video_actual = None
         
         self.ventana.geometry(f'{ancho}x{alto}+{ancho // 2 - ancho // 2}+{alto // 2 - alto // 2}')
         self.ventana.resizable(True, True)
         self.ventana.configure(bg=COLOR_BG)
-        self.ventana.title("Clasificador de Imágenes")
+        self.ventana.title("Clasificador Inteligente de Archivos")
         
         self.lista = []
         self.indiceActual = 0
@@ -58,7 +64,6 @@ class Clasificador:
         self.ventana.mainloop()
 
     def setup_ui(self):
-        # Barra Izquierda
         self.panel_izquierdo = Frame(self.ventana, bg=COLOR_SIDEBAR, width=250)
         self.panel_izquierdo.pack(side='left', fill='y')
         self.panel_izquierdo.pack_propagate(False)
@@ -68,18 +73,21 @@ class Clasificador:
         self.btn_crear_moderno(self.panel_izquierdo, "Origen", self.seleccionarCarpeta, COLOR_ACCENT, ruta_imagen="iconos/carpetaIcono.png")
         self.btn_crear_moderno(self.panel_izquierdo, "Destino (IA)", self.carpetaPrincipalDestino, COLOR_ACCENT, ruta_imagen="iconos/carpetaIcono.png")
         
+        self.check_autoclose = Checkbutton(self.panel_izquierdo, text="Auto-cerrar Videos", variable=self.var_autoclose,
+                                           bg=COLOR_SIDEBAR, fg="white", selectcolor=COLOR_BG, activebackground=COLOR_SIDEBAR, activeforeground="white",
+                                           font=("Segoe UI", 9), bd=0, highlightthickness=0)
+        self.check_autoclose.pack(fill='x', padx=15, pady=(5, 10))
+        
         Frame(self.panel_izquierdo, bg="#40444b", height=1).pack(fill='x', padx=15, pady=15)
         
         Label(self.panel_izquierdo, text="ACCIONES", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(5, 5), anchor="w", padx=15)
         self.btn_crear_moderno(self.panel_izquierdo, "Nueva Carpeta", self.nuevaCarpetaPopup, "#4f545c", ruta_imagen="iconos/agregarIcono.png")
         self.btn_crear_moderno(self.panel_izquierdo, "Herramientas", self.abrir_menu_herramientas, COLOR_WARNING, ruta_imagen="iconos/herramientasIcono.png")
 
-        # Panel Derecho
         self.panel_derecho = Frame(self.ventana, bg=COLOR_SIDEBAR, width=280)
         self.panel_derecho.pack(side='right', fill='y')
         self.panel_derecho.pack_propagate(False)
 
-        # Tarjeta IA
         self.card_ia = Frame(self.panel_derecho, bg="#202225", padx=10, pady=10)
         self.card_ia.pack(fill='x', padx=10, pady=20)
         
@@ -98,11 +106,9 @@ class Clasificador:
         Label(self.card_ia, text="SUGERENCIA:", bg="#202225", fg=COLOR_TEXT_SEC, font=("Arial", 8)).pack(anchor="w")
         Label(self.card_ia, textvariable=self.sugerenciaIA, bg="#202225", fg=COLOR_SUCCESS, font=("Segoe UI", 16, "bold"), wraplength=240, justify="left").pack(anchor="w", pady=2)
 
-        # Botón Acción IA
         self.btn_accion_ia = Button(self.card_ia, text="Mover Aquí", bg=COLOR_ACCENT, fg="white", 
                                     font=("Segoe UI", 9, "bold"), bd=0, padx=10, pady=5, cursor=self.cursor)
 
-        # Lista de Carpetas
         Label(self.panel_derecho, text="CLASIFICAR EN:", bg=COLOR_SIDEBAR, fg=COLOR_TEXT_SEC, font=("Arial", 8, "bold")).pack(pady=(10, 5), anchor="w", padx=15)
         
         self.frame_lista = Frame(self.panel_derecho, bg=COLOR_SIDEBAR)
@@ -120,7 +126,6 @@ class Clasificador:
         self.scrollbar.pack(side="right", fill="y")
         self._bind_mouse_scroll(self.canvas)
 
-        # Panel Central (Imagenes y Videos)
         self.panel_central = Frame(self.ventana, bg=COLOR_BG)
         self.panel_central.pack(side='left', fill='both', expand=True)
         
@@ -149,85 +154,49 @@ class Clasificador:
                                         bg=COLOR_BG, fg=COLOR_TEXT_SEC, font=("Segoe UI", 9))
         self.lbl_nombre_archivo.pack(side='top')
 
-
-    # Funciones de Estilo UI
     def btn_crear_moderno(self, parent, text, command, bg_color, ruta_imagen=None):
-        """
-        Crea un botón moderno. 
-        Si se pasa 'ruta_imagen', carga el icono y lo pone a la izquierda.
-        """
         btn = Button(parent, text=text, command=command, 
                      bg=bg_color, fg="white", 
                      font=FONT_BOLD, bd=0, padx=20, pady=12, 
                      cursor=self.cursor, activebackground=bg_color, activeforeground="white")
-        
         if ruta_imagen and os.path.exists(ruta_imagen):
             try:
-                # 1. Cargar y redimensionar imagen (para que quepa en el botón)
-                img = Image.open(ruta_imagen)
-                img = img.resize((24, 24), Image.Resampling.LANCZOS) # Tamaño icono estándar
+                img = Image.open(ruta_imagen).resize((24, 24), Image.Resampling.LANCZOS)
                 foto = ImageTk.PhotoImage(img)
-                
-                # 2. Configurar botón con imagen
-                btn.config(image=foto, compound="left", padx=15) # compound='left' pone el icono antes del texto
+                btn.config(image=foto, compound="left", padx=15)
                 btn.image = foto 
-            except Exception as e:
-                print(f"No se pudo cargar icono {ruta_imagen}: {e}")
-
+            except: pass
         btn.pack(fill='x', padx=15, pady=5)
-        
-        # Efecto Hover
         def on_enter(e): btn['bg'] = self.adjust_color_lightness(bg_color, 1.2)
         def on_leave(e): btn['bg'] = bg_color
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
-        
+        btn.bind("<Enter>", on_enter); btn.bind("<Leave>", on_leave)
         return btn
 
     def btn_crear_nav(self, parent, text, command, side):
-        btn = Button(parent, text=text, command=command,
-                     bg="#40444b", fg="white",
-                     font=("Segoe UI", 12), bd=0, padx=30, pady=10,
-                     cursor=self.cursor)
+        btn = Button(parent, text=text, command=command, bg="#40444b", fg="white", font=("Segoe UI", 12), bd=0, padx=30, pady=10, cursor=self.cursor)
         btn.pack(side=side, padx=20)
-        
         def on_enter(e): btn['bg'] = "#585d66"
         def on_leave(e): btn['bg'] = "#40444b"
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
+        btn.bind("<Enter>", on_enter); btn.bind("<Leave>", on_leave)
 
     def btn_crear_categoria(self, parent, text, command):
-        btn = Button(parent, text=f"📁 {text}", command=command,
-                     bg="#36393f", fg="#dcddde",
-                     font=("Segoe UI", 9), bd=0, anchor="w", padx=10, pady=8,
-                     cursor=self.cursor)
+        btn = Button(parent, text=f"📁 {text}", command=command, bg="#36393f", fg="#dcddde", font=("Segoe UI", 9), bd=0, anchor="w", padx=10, pady=8, cursor=self.cursor)
         btn.pack(fill='x', padx=2, pady=1)
-        
         self._bind_mouse_scroll(btn) 
-        
-        def on_enter(e): 
-            btn['bg'] = COLOR_ACCENT
-            btn['fg'] = "white"
-        def on_leave(e): 
-            btn['bg'] = "#36393f"
-            btn['fg'] = "#dcddde"
-        btn.bind("<Enter>", on_enter, add='+')
-        btn.bind("<Leave>", on_leave, add='+')
+        def on_enter(e): btn['bg'] = COLOR_ACCENT; btn['fg'] = "white"
+        def on_leave(e): btn['bg'] = "#36393f"; btn['fg'] = "#dcddde"
+        btn.bind("<Enter>", on_enter, add='+'); btn.bind("<Leave>", on_leave, add='+')
 
     def adjust_color_lightness(self, color_hex, factor):
         try:
             r, g, b = int(color_hex[1:3], 16), int(color_hex[3:5], 16), int(color_hex[5:7], 16)
-            r = min(255, int(r * factor))
-            g = min(255, int(g * factor))
-            b = min(255, int(b * factor))
+            r = min(255, int(r * factor)); g = min(255, int(g * factor)); b = min(255, int(b * factor))
             return f"#{r:02x}{g:02x}{b:02x}"
         except: return color_hex
 
-    # Interfaz y Scroll
     def _bind_mouse_scroll(self, widget):
         widget.bind("<MouseWheel>", self.scroll_with_mouse)
-        widget.bind("<Button-4>", self.scroll_with_mouse)
-        widget.bind("<Button-5>", self.scroll_with_mouse)
+        widget.bind("<Button-4>", self.scroll_with_mouse); widget.bind("<Button-5>", self.scroll_with_mouse)
 
     def ajustar_scrollFrame(self, event=None):
         self.canvas.itemconfig(self.canvas.create_window((0, 0), window=self.scrollFrame, anchor='nw', width=self.canvas.winfo_width()))
@@ -241,9 +210,7 @@ class Clasificador:
         if not self.carpetasDestino:
             Label(self.scrollFrame, text="No hay subcarpetas", bg=COLOR_SIDEBAR, fg="gray").pack(pady=10)
             return
-        
         self._bind_mouse_scroll(self.scrollFrame)
-        
         for carpeta in sorted(self.carpetasDestino.keys()):
             self.btn_crear_categoria(self.scrollFrame, carpeta, lambda c=carpeta: self.clasificar(c))
         self.canvas.config(scrollregion=self.canvas.bbox('all'))
@@ -256,23 +223,19 @@ class Clasificador:
         else:
             self.barra_carga.stop()
             self.barra_carga.config(mode='determinate')
-            
             if total > 0:
                 porcentaje = (actual / total) * 100
                 self.barra_carga['value'] = porcentaje
                 self.estado_carga_texto.set(f"{texto} ({actual}/{total})")
-            
             if actual >= total:
                 self.barra_carga['value'] = 100
                 self.estado_carga_texto.set("IA Activa y Lista")
                 if self.lista:
-                    # Iniciar predicción en hilo nuevo con ID de trabajo
                     self.sugerenciaIA.set("Re-Analizando...")
                     self.current_job_id += 1
                     threading.Thread(target=self._predecir_actual, args=(self.lista[self.indiceActual], self.current_job_id), daemon=True).start()
-        
         self.ventana.update_idletasks()
-        
+
     def seleccionarCarpeta(self):
         self.carpetaOrigen = filedialog.askdirectory(title='Seleccione Carpeta Origen')
         self.cargarElementos()
@@ -280,28 +243,20 @@ class Clasificador:
     def carpetaPrincipalDestino(self):
         self.carpetaDestino = filedialog.askdirectory(title='Seleccione Carpeta Destino')
         if not self.carpetaDestino: return
-        
         self.barra_carga['value'] = 0
         self.estado_carga_texto.set("Iniciando Motor IA...")
-        
         self.ia = FaceBrain(self.carpetaDestino, log_callback=print, progress_callback=self.actualizar_barra_ia)
         self.ia.cargar_referencias_async()
-        
-        self.carpetasDestino = {
-            f: os.path.join(self.carpetaDestino, f) for f in os.listdir(self.carpetaDestino)
-            if os.path.isdir(os.path.join(self.carpetaDestino, f))
-        }
+        self.carpetasDestino = {f: os.path.join(self.carpetaDestino, f) for f in os.listdir(self.carpetaDestino) if os.path.isdir(os.path.join(self.carpetaDestino, f))}
         self.actualizarBotones()
         
     def cargarElementos(self):
         if not self.carpetaOrigen: return
         try:
-            self.lista = [os.path.join(self.carpetaOrigen, f) for f in os.listdir(self.carpetaOrigen) 
-                          if f.lower().endswith(self.imagenValida + self.videoValido)]
+            self.lista = [os.path.join(self.carpetaOrigen, f) for f in os.listdir(self.carpetaOrigen) if f.lower().endswith(self.imagenValida + self.videoValido)]
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo leer la carpeta: {e}")
             return
-
         if not self.lista: messagebox.showerror('Info', 'Carpeta vacía de multimedia.')
         else:
             self.indiceActual = 0
@@ -309,7 +264,6 @@ class Clasificador:
 
     def mostrarContenido(self):
         if not self.lista: return
-        
         self.current_job_id += 1
         job_id = self.current_job_id
         
@@ -319,12 +273,10 @@ class Clasificador:
         
         self.lbl_contador.config(text=f"{self.indiceActual + 1} / {len(self.lista)}")
         self.lbl_nombre_archivo.config(text=nombre_archivo)
-        
         self.ventana.update_idletasks()
         
         w_frame = self.frame_imagen.winfo_width()
         h_frame = self.frame_imagen.winfo_height()
-        
         if w_frame < 50: w_frame = 800
         if h_frame < 50: h_frame = 600
 
@@ -338,6 +290,9 @@ class Clasificador:
                 foto = ImageTk.PhotoImage(img)
                 self.etiquetaElemento.config(image=foto, text="")
                 self.etiquetaElemento.image = foto
+                
+                btn_edit = Button(self.frame_imagen, text="✂ Recortar", command=lambda: self.abrirEditor(contenido), bg="#40444b", fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
+                btn_edit.place(relx=0.95, rely=0.05, anchor="ne")
             except:
                 self.etiquetaElemento.config(image="", text="Error al cargar imagen")
                 
@@ -353,48 +308,80 @@ class Clasificador:
                 self.etiquetaElemento.config(image=foto, text="")
                 self.etiquetaElemento.image = foto
                 
-                btn_play = Button(self.frame_imagen, text="▶ REPRODUCIR", command=lambda: self.reproducirVideo(contenido),
-                                  bg=COLOR_ACCENT, fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
+                btn_play = Button(self.frame_imagen, text="▶ REPRODUCIR", command=lambda: self.reproducirVideo(contenido), bg=COLOR_ACCENT, fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
                 btn_play.place(relx=0.5, rely=0.9, anchor="center")
+                
+                btn_crop = Button(self.frame_imagen, text="✂ Recortar Video", command=lambda: self.abrir_editor_video(contenido), bg="#40444b", fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
+                btn_crop.place(relx=0.95, rely=0.05, anchor="ne")
             else:
                 self.etiquetaElemento.config(text="Video sin vista previa", image="")
         
-        # Resetear UI antes de iniciar hilo
         self.btn_accion_ia.pack_forget()
         self.card_ia.config(bg="#202225")
         
         if self.ia:
             self.sugerenciaIA.set("Analizando...")
-            # Pasamos el job_id al hilo
             threading.Thread(target=self._predecir_actual, args=(contenido, job_id), daemon=True).start()
         else:
             self.sugerenciaIA.set("IA Inactiva")
-            
-        if ext in self.imagenValida:
-            try: 
-                img = Image.open(contenido)
-                img.thumbnail((w_frame, h_frame), Image.Resampling.LANCZOS)
-                foto = ImageTk.PhotoImage(img)
-                self.etiquetaElemento.config(image=foto, text="")
-                self.etiquetaElemento.image = foto
 
-                btn_edit = Button(self.frame_imagen, text="Recortar",
-                                  command=lambda: self.abrirEditor(contenido),
-                                  bg="#40444b", fg="white", font=FONT_BOLD, bd=0, padx=15, pady=5, cursor=self.cursor)
-                btn_edit.place(relx=0.95, rely=0.05, anchor="ne")
-            except:
-                self.etiquetaElemento.config(image="", text="Error al cargar imagen")
-                
     def abrirEditor(self, image_path):
-        def alTerminar():
-            self.mostrarContenido()
+        def alTerminar(coords=None):
+            self.mostrarContenido() 
             if self.ia: threading.Thread(target=self._predecir_actual, args=(image_path, self.current_job_id), daemon=True).start()
+        EditorImagen(self.ventana, image_path, alTerminar, modo_video=False)
+
+    def abrir_editor_video(self, video_path):
+        try:
+            cap = cv2.VideoCapture(video_path)
+            ret, frame = cap.read()
+            cap.release()
+            if not ret: 
+                messagebox.showerror("Error", "No se pudo leer el video")
+                return
+            temp_ref = f"temp_ref_{uuid.uuid4().hex}.jpg"
+            cv2.imwrite(temp_ref, frame)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        def al_recibir_coords(coords):
+            if os.path.exists(temp_ref):
+                try: os.remove(temp_ref)
+                except: pass
+            if not coords: return
+            x1, y1, x2, y2 = coords
             
-        EditorImagen(self.ventana, image_path, alTerminar)
+            def procesar():
+                popup = Toplevel(self.ventana)
+                popup.title("Procesando Video...")
+                popup.geometry("300x100")
+                Label(popup, text="Recortando video, espera...", font=("Arial", 10)).pack(pady=20)
+                try:
+                    dir_name = os.path.dirname(video_path)
+                    base_name = os.path.basename(video_path)
+                    temp_out = os.path.join(dir_name, f"temp_crop_{base_name}")
+                    
+                    clip = VideoFileClip(video_path)
+                    cropped_clip = clip.cropped(x1=x1, y1=y1, x2=x2, y2=y2)
+                    cropped_clip.write_videofile(temp_out, codec="libx264", audio_codec="aac", logger=None)
+                    clip.close()
+                    cropped_clip.close()
+                    time.sleep(0.5) 
+                    shutil.move(temp_out, video_path)
+                    
+                    self.ventana.after(0, lambda: messagebox.showinfo("Éxito", "Video recortado."))
+                    self.ventana.after(0, self.mostrarContenido)
+                except Exception as e:
+                    self.ventana.after(0, lambda: messagebox.showerror("Error", f"Fallo al procesar: {e}"))
+                finally:
+                    self.ventana.after(0, popup.destroy)
+            threading.Thread(target=procesar, daemon=True).start()
+
+        EditorImagen(self.ventana, temp_ref, al_recibir_coords, modo_video=True)
 
     def _predecir_actual(self, image_path, job_id):
         if job_id != self.current_job_id: return
-
         if not self.ia: return
         
         img_para_analisis = image_path
@@ -404,23 +391,16 @@ class Clasificador:
             try:
                 cap = cv2.VideoCapture(image_path)
                 length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                if length > 10:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(length * 0.15))
-                
+                if length > 10: cap.set(cv2.CAP_PROP_POS_FRAMES, int(length * 0.15))
                 ret, frame = cap.read()
                 cap.release()
-                
                 if ret:
                     temp_frame_path = f"temp_frame_{uuid.uuid4().hex}.jpg"
                     cv2.imwrite(temp_frame_path, frame)
                     img_para_analisis = temp_frame_path
                     es_video = True
-                else:
-                    self.ventana.after(0, lambda: self.sugerenciaIA.set("Video ilegible"))
-                    return
-            except:
-                self.ventana.after(0, lambda: self.sugerenciaIA.set("Error Video"))
-                return
+                else: return
+            except: return
 
         if job_id != self.current_job_id: 
             if es_video and os.path.exists(img_para_analisis):
@@ -434,10 +414,8 @@ class Clasificador:
             try: os.remove(img_para_analisis)
             except: pass
 
-        # Control de Hilos (id)
         if job_id != self.current_job_id: return
 
-        # Seguridad de Hilos
         def update_ui_ia():
             if "Desconocido" in res or "No detecto" in res:
                 self.card_ia.config(bg="#202225")
@@ -449,7 +427,6 @@ class Clasificador:
                                             command=lambda: self.clasificar(nombre_carpeta))
                     self.btn_accion_ia.pack(fill='x', pady=5)
             self.sugerenciaIA.set(res)
-
         self.ventana.after(0, update_ui_ia)
 
     def siguienteElemento(self):
@@ -466,7 +443,6 @@ class Clasificador:
         if not self.lista: return
         contenido = self.lista[self.indiceActual]
         destino = os.path.join(self.carpetasDestino[carpeta], os.path.basename(contenido))
-        
         try:
             shutil.move(contenido, destino)
             self.lista.pop(self.indiceActual)
@@ -486,7 +462,6 @@ class Clasificador:
         if not self.carpetaDestino:
             messagebox.showwarning("Atención", "Selecciona primero la carpeta de destino.")
             return
-            
         top = Toplevel(self.ventana)
         top.title("Nueva Carpeta")
         w_pop, h_pop = 300, 150
@@ -494,12 +469,8 @@ class Clasificador:
         y = self.ventana.winfo_screenheight() // 2 - h_pop // 2
         top.geometry(f"{w_pop}x{h_pop}+{x}+{y}")
         top.configure(bg=COLOR_BG)
-        
         Label(top, text="Nombre de la carpeta:", bg=COLOR_BG, fg="white").pack(pady=10)
-        entry = Entry(top)
-        entry.pack(pady=5)
-        entry.focus()
-        
+        entry = Entry(top); entry.pack(pady=5); entry.focus()
         def confirmar():
             nombre = entry.get()
             if nombre:
@@ -509,101 +480,59 @@ class Clasificador:
                     self.carpetasDestino[nombre] = path
                     self.actualizarBotones()
                     top.destroy()
-                except Exception as e:
-                    messagebox.showerror("Error", str(e))
-        
+                except Exception as e: messagebox.showerror("Error", str(e))
         Button(top, text="Crear", command=confirmar, bg=COLOR_SUCCESS, fg="white", bd=0, padx=10, pady=5).pack(pady=10)
 
-    # Herramientas
     def abrir_menu_herramientas(self):
         top = Toplevel(self.ventana)
         top.title("Herramientas Avanzadas")
-        
         w_pop, h_pop = 450, 500
         x = self.ventana.winfo_screenwidth() // 2 - w_pop // 2
         y = self.ventana.winfo_screenheight() // 2 - h_pop // 2
         top.geometry(f"{w_pop}x{h_pop}+{x}+{y}")
         top.configure(bg=COLOR_BG)
-        
-        # UI Barra
-        lbl_status = Label(top, text="Esperando...", bg=COLOR_BG, fg="gray")
-        lbl_status.pack(side="bottom", pady=5)
-        pb_renombrar = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=400)
-        pb_renombrar.pack(side="bottom", pady=5, padx=20)
-        
-        # Actualizar UI desde el Hilo
+        lbl_status = Label(top, text="Esperando...", bg=COLOR_BG, fg="gray"); lbl_status.pack(side="bottom", pady=5)
+        pb_renombrar = ttk.Progressbar(top, orient="horizontal", mode="determinate", length=400); pb_renombrar.pack(side="bottom", pady=5, padx=20)
         def update_ui_safe(current, total, msg):
-            pb_renombrar["maximum"] = total
-            pb_renombrar["value"] = current
+            pb_renombrar["maximum"] = total; pb_renombrar["value"] = current
             lbl_status.config(text=f"{msg} ({int(current/total*100)}%)" if total > 0 else msg)
-        
-        # El callback que llama el hilo
-        def progress_adapter(current, total, msg=""):
-            # Programamos la actualización en el hilo principal
-            top.after(0, lambda: update_ui_safe(current, total, msg))
-
-        # Asignar callback
+        def progress_adapter(current, total, msg=""): top.after(0, lambda: update_ui_safe(current, total, msg))
         self.renamer.progress_callback = progress_adapter
-        
-        # Lógica de Hilos
         def run_threaded(rutas):
-            if not isinstance(rutas, list): rutas = [rutas] # Asegurar que sea lista
-            
-            if messagebox.askyesno("Confirmar", "El proceso iniciará ahora.\nLa pantalla no se congelará."):
+            if not isinstance(rutas, list): rutas = [rutas]
+            if messagebox.askyesno("Confirmar", "El proceso iniciará ahora."):
                 pb_renombrar["value"] = 0
-                
                 def worker():
-                    for path in rutas:
-                        self.renamer.procesar_carpeta(path)
-                    
-                    # Finalizar
+                    for path in rutas: self.renamer.procesar_carpeta(path)
                     top.after(0, lambda: messagebox.showinfo("Listo", "Proceso finalizado"))
                     top.after(0, lambda: [self.cargarElementos(), self.actualizarBotones(), top.destroy()])
-                
                 threading.Thread(target=worker, daemon=True).start()
 
         Label(top, text="Limpieza y Renombrado", bg=COLOR_BG, fg="white", font=FONT_BOLD).pack(pady=10)
-        
-        if self.carpetaOrigen:
-            Button(top, text="Limpiar Carpeta Origen (Actual)", command=lambda: run_threaded(self.carpetaOrigen), 
-                   bg=COLOR_SIDEBAR, fg="white", bd=0, pady=8, width=40).pack(pady=5)
-        
+        if self.carpetaOrigen: Button(top, text="Limpiar Carpeta Origen (Actual)", command=lambda: run_threaded(self.carpetaOrigen), bg=COLOR_SIDEBAR, fg="white", bd=0, pady=8, width=40).pack(pady=5)
         if self.carpetaDestino:
             rutas_destino = [os.path.join(self.carpetaDestino, d) for d in os.listdir(self.carpetaDestino) if os.path.isdir(os.path.join(self.carpetaDestino, d))]
-            Button(top, text="Limpiar TODAS las Subcarpetas Destino", 
-                   command=lambda: run_threaded(rutas_destino),
-                   bg=COLOR_WARNING, fg="white", bd=0, pady=8, width=40).pack(pady=5)
-            
+            Button(top, text="Limpiar TODAS las Subcarpetas Destino", command=lambda: run_threaded(rutas_destino), bg=COLOR_WARNING, fg="white", bd=0, pady=8, width=40).pack(pady=5)
             Label(top, text="--- O selecciona una específica ---", bg=COLOR_BG, fg=COLOR_TEXT_SEC).pack(pady=(15, 5))
-            
-            frame_list = Frame(top, bg=COLOR_BG)
-            frame_list.pack(fill='both', expand=True, padx=20, pady=5)
-            
-            scrollbar = Scrollbar(frame_list, orient="vertical")
-            listbox = Listbox(frame_list, yscrollcommand=scrollbar.set, bg=COLOR_SIDEBAR, fg="white", selectbackground=COLOR_ACCENT, bd=0, highlightthickness=0)
-            scrollbar.config(command=listbox.yview)
-            
-            listbox.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-            
-            carpetas_ordenadas = sorted(self.carpetasDestino.keys())
-            for carpeta in carpetas_ordenadas:
-                listbox.insert(END, carpeta)
-                
+            frame_list = Frame(top, bg=COLOR_BG); frame_list.pack(fill='both', expand=True, padx=20, pady=5)
+            scrollbar = Scrollbar(frame_list, orient="vertical"); listbox = Listbox(frame_list, yscrollcommand=scrollbar.set, bg=COLOR_SIDEBAR, fg="white", selectbackground=COLOR_ACCENT, bd=0, highlightthickness=0)
+            scrollbar.config(command=listbox.yview); listbox.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+            for carpeta in sorted(self.carpetasDestino.keys()): listbox.insert(END, carpeta)
             def procesar_seleccion():
                 sel = listbox.curselection()
-                if sel:
-                    nombre = listbox.get(sel[0])
-                    run_threaded(self.carpetasDestino[nombre])
-                else:
-                    messagebox.showwarning("Atención", "Selecciona una carpeta de la lista")
+                if sel: run_threaded(self.carpetasDestino[listbox.get(sel[0])])
+                else: messagebox.showwarning("Atención", "Selecciona una carpeta de la lista")
+            Button(top, text="Procesar Selección", command=procesar_seleccion, bg=COLOR_ACCENT, fg="white", bd=0, pady=8, width=40).pack(pady=10)
 
-            Button(top, text="Procesar Selección", command=procesar_seleccion,
-                   bg=COLOR_ACCENT, fg="white", bd=0, pady=8, width=40).pack(pady=10)
-
-    # Reproductor de Video
     def reproducirVideo(self, rutaVideo):
+        if self.popup_video_actual and self.popup_video_actual.winfo_exists():
+            self.popup_video_actual.destroy()
+            self.video_activo = False
+            time.sleep(0.1)
+
         popupVideo = Toplevel(self.ventana)
+        self.popup_video_actual = popupVideo
+        
         popupVideo.title('Reproductor')
         popupVideo.configure(bg="black")
         
@@ -615,67 +544,99 @@ class Clasificador:
         etiquetaVideo = Label(popupVideo, bg="black")
         etiquetaVideo.pack(fill='both', expand=True)
         
+        self.video_activo = True
         self.detenerAudio = threading.Event()
-        
-        audio_filename = f"temp_audio_{uuid.uuid4().hex}.mp3"
+        audio_filename = os.path.join(tempfile.gettempdir(), f"temp_audio_{uuid.uuid4().hex}.mp3")
 
         def reproducirAudio():
+            clip = None
             try:
                 clip = VideoFileClip(rutaVideo)
                 clip.audio.write_audiofile(audio_filename, logger=None)
-                pygame.mixer.init()
+                clip.close() 
+                
                 pygame.mixer.music.load(audio_filename)
                 pygame.mixer.music.play()
+                
                 while pygame.mixer.music.get_busy():
                     if self.detenerAudio.is_set():
                         pygame.mixer.music.stop()
                         break
             except Exception as e:
-                print(f"Error Audio: {e}")
+                # print(f"Info Audio: {e}") # Silenciado para no ensuciar consola
+                pass
             finally:
-                try: pygame.mixer.quit()
-                except: pass
+                if 'clip' in locals() and clip: 
+                    try: clip.close()
+                    except: pass
                 if os.path.exists(audio_filename):
                     try: os.remove(audio_filename)
                     except: pass
 
         cap = cv2.VideoCapture(rutaVideo)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        
-        speed = 0.9 
+        speed = 0.8
         if fps == 0: fps = 30
         elif fps > 50: speed = 0.5
 
         def reproducir():
+            if not self.video_activo: return
+            if not cap.isOpened(): return
+
             ret, frame = cap.read()
-            if not ret or self.detenerAudio.is_set():
-                cap.release()
+            if not ret:
+                if self.var_autoclose.get():
+                    cerrarPopup()
+                else:
+                    cap.release()
                 return
             
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, (w_pop, h_pop)) 
-            imagen = Image.fromarray(frame)
-            foto = ImageTk.PhotoImage(imagen)
-            etiquetaVideo.config(image=foto)
-            etiquetaVideo.image = foto
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.resize(frame, (w_pop, h_pop)) 
+                imagen = Image.fromarray(frame)
+                foto = ImageTk.PhotoImage(imagen)
+                if etiquetaVideo.winfo_exists():
+                    etiquetaVideo.config(image=foto)
+                    etiquetaVideo.image = foto
+            except: pass
 
             delay = int(1000/fps * speed)
             if delay < 1: delay = 1
             
-            popupVideo.after(delay, reproducir)
+            if self.video_activo and popupVideo.winfo_exists():
+                popupVideo.after(delay, reproducir)
             
         reproducir()
         threading.Thread(target=reproducirAudio, daemon=True).start()
             
         def cerrarPopup():
-            self.detenerAudio.set()
-            popupVideo.destroy()
-            if os.path.exists(audio_filename):
-                try: os.remove(audio_filename)
+            if not self.video_activo: return
+            self.video_activo = False
+            
+            try: popupVideo.destroy()
+            except: pass
+            
+            def limpieza_bg():
+                self.detenerAudio.set()
+                if cap.isOpened(): cap.release()
+                
+                try: 
+                    pygame.mixer.music.stop()
+                    pygame.mixer.music.unload()
                 except: pass
+                
+                for _ in range(5):
+                    try:
+                        if os.path.exists(audio_filename):
+                            os.remove(audio_filename)
+                        break
+                    except:
+                        time.sleep(0.5)
+            
+            threading.Thread(target=limpieza_bg, daemon=True).start()
         
         popupVideo.protocol("WM_DELETE_WINDOW", cerrarPopup)
-        popupVideo.after(int(1000/fps), lambda: None) 
 
 if __name__ == "__main__":
     Clasificador()
